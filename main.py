@@ -4,17 +4,20 @@ from tensorflow.keras.layers import Dense
 
 
 import numpy as np
+import pygame
+import time
 
 import math
 import random
 import gc # for gc.collect()
-import time
 
-def sig(x):
-    return 1 / (1 + np.exp(-x))
+REPRODUCTION_COST = 5
+ROUNDLING_COUNT = 700
+FOOD_COUNT = 500
+FOOD_ENERGY = 4
+MULTIPLIER = 3
 
-
-def copy_and_randomize_weights(original_model, new_model, noise_std_dev=0.1):
+def copy_and_randomize_weights(original_model, new_model, noise_std_dev=0.05):
     for original_layer, new_layer in zip(original_model.layers, new_model.layers):
         if isinstance(original_layer, tf.keras.layers.Dense):  # if you want to randomize only Dense layers
             weights, biases = original_layer.get_weights()
@@ -45,7 +48,7 @@ class Board:
             model.add(Dense(16, activation='linear'))
             model.add(Dense(5, activation='linear'))
             model.compile(optimizer='adam', loss='mse')
-            self.roundlings.append(Roundling(7, random.random() * self.max_x, random.random() * self.max_y, random.random() * 5, model))
+            self.roundlings.append(Roundling(4, random.random() * self.max_x, random.random() * self.max_y, random.random() * 5, model))
         for i in range(self.max_food):
             self.food.append(Food(random.random() * self.max_x, random.random() * self.max_y))
 
@@ -58,7 +61,7 @@ class Board:
         for p in self.proteins:
             p.turn()
             p.time += delta
-        self.proteins[:] = [p for p in self.proteins if not p.time >= 1 or self.is_outside(p)]
+        self.proteins[:] = [p for p in self.proteins if not p.time >= 1 or not self.is_outside(p)]
         gc.collect()
 
         for f in self.food:
@@ -70,29 +73,32 @@ class Board:
         for r in self.roundlings:
             a = r.turn()
             if a is not None:
+                print(a.p_type)
                 self.proteins.append(a)
             r.time += delta
             for p in self.proteins:
                 if r.is_interacting(p) and r != p.creator_obj:
                     r.proteins.append(p)
+                    p.dead = True
 
-        self.time += delta
 
         for r in self.roundlings:
             for f in self.food:
                 if r.is_interacting(f) and not f.dead:
                     r.energy += f.energy
                     f.dead = True
-            if r.energy >= 10:
-                self.roundlings.append(r.reproduce())  # TODO
+            if r.energy >= REPRODUCTION_COST:
+                self.roundlings.extend([r.reproduce() for _ in range(MULTIPLIER)])
 
         self.food[:] = [f for f in self.food if not f.dead]
-        self.proteins[:] = [p for p in self.proteins if not p.dead]
-        self.roundlings[:] = [r for r in self.roundlings if not r.energy <= 0 or r.time > 30 or self.is_outside(r)]
+        self.proteins[:] = [p for p in self.proteins if not p.dead or not self.is_outside(p)]
+        self.roundlings[:] = [r for r in self.roundlings if not r.energy <= 0 or r.time > 30 or not self.is_outside(r)]
+
         gc.collect()
 
         while len(self.food) < self.max_food:
             self.food.append(Food(random.random() * self.max_x, random.random() * self.max_y))
+        self.time += delta
 
 class IntObject:
     def __init__(self, energy, x, y, radius):
@@ -104,11 +110,11 @@ class IntObject:
        self.dead = False
 
     def is_interacting(self, obj):
-        return self.radius + obj.radius >= math.sqrt(math.pow(self.x - obj.x, 2) + math.pow(self.y - obj.y, 2))
+        return self.radius + obj.radius >= abs(math.sqrt(math.pow(self.x - obj.x, 2) + math.pow(self.y - obj.y, 2)))
 
     def brownian_move(self):
         angle = random.random() * 2 * math.pi
-        delta = 0.2
+        delta = 0.7
         self.x += delta * math.cos(angle)
         self.y += delta * math.sin(angle)
 
@@ -118,7 +124,7 @@ class IntObject:
 
 class Food(IntObject):
     def __init__(self, x, y):
-        super().__init__(1, x, y, 1)
+        super().__init__(FOOD_ENERGY, x, y, 3)
 
     def make_protein(self):
         return Protein((random.random() * 10 - 5) + self.x, (random.random() * 10 - 5) + self.y, self, 0.1)  # 0.1 is a special type
@@ -126,7 +132,7 @@ class Food(IntObject):
 
 class Protein(IntObject):
     def __init__(self, x, y, creator_obj, p_type):
-        super().__init__(0, x, y, 2)
+        super().__init__(0, x, y, 0.5)
         self.p_type = p_type  # float that describes what type of protien it is
         self.creator_obj = creator_obj  # We don't want this protein to interact with the creator
 
@@ -167,12 +173,11 @@ class Roundling(IntObject):
 
     def move(self, output_vector):  # TODO remember to subtract energy according to an energy loss function per vector magnitude
         c = 0.3
-        passive_energy = 0.01
-        self.brownian_move()
+        passive_energy = 0.05
         out = output_vector[0]
         self.x += out[0]
         self.y += out[1]
-        dist_delta = math.sqrt(math.pow(out[0], 2) + math.pow(out[1], 2))
+        dist_delta = abs(math.sqrt(math.pow(out[0], 2) + math.pow(out[1], 2)))
         if out[2] > 0.5: # create protein with x and y
             if out[3] > 5:
                 protein_x = 5
@@ -185,7 +190,7 @@ class Roundling(IntObject):
 
             protein_cost = 0.05
             self.energy -= protein_cost
-        self.energy -= dist_delta * c * self.radius + passive_energy # currently linear; we should experiment with exponential c
+        self.energy -= dist_delta * c + passive_energy # currently linear; we should experiment with exponential c
         if out[2] > 0.5:
             return Protein(protein_x + self.x, protein_y + self.y, self, out[2])
         else:
@@ -195,8 +200,8 @@ class Roundling(IntObject):
         return self.move(self.decide_move())
 
     def reproduce(self):  # add random vector to weights and biases
-        self.energy = self.energy / 2
-        child_energy = self.energy
+        self.energy = self.energy / 1.3
+        child_energy = self.energy / 1.3
         child_x = (random.random() * 2 - 1) + self.x
         child_y = (random.random() * 2 - 1) + self.y
         child_radius_delta = (random.random() * 2 - 1)
@@ -211,21 +216,41 @@ class Roundling(IntObject):
         child_model.add(Dense(5, activation='linear'))
         copy_and_randomize_weights(self.model, child_model)
 
+        print(f"location: ({child_x}, {child_y})")
+        time.sleep(1)
         return Roundling(child_energy, child_x, child_y, child_radius, child_model)
 
 
 if __name__ == "__main__":
     random.seed(2031239)
-    ROUNDLING_COUNT = 70
-    FOOD_COUNT = 40
+
 
     # initialize roundlings
-    board = Board(100, 100, FOOD_COUNT)
+    board = Board(500, 500, FOOD_COUNT)
     board.populate(ROUNDLING_COUNT)
+    pygame.init()
+    screen = pygame.display.set_mode((1000, 1000))
+    clock = pygame.time.Clock()
+    running = True
 
-    while True:
+    while running:
         board.step_time()
-        print(f"Time elapsed: {board.time}")
-        print(f"Roundling Count: {len(board.roundlings)}")
-        print(f"Protein Count: {len(board.proteins)}")
-        time.sleep(0.5)
+        screen.fill("black")
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+        for r in board.roundlings:
+            pygame.draw.circle(screen, (255, 0, 0), (r.x * 2, r.y * 2), r.radius * 2, 1)
+        for f in board.food:
+            pygame.draw.circle(screen, (0, 255, 0), (f.x * 2, f.y * 2), f.radius * 2, 1)
+        for p in board.proteins:
+            if p.p_type == 0.5:
+                color = (0, 100, 100)
+            else:
+                color = (0, 0, 255)
+            pygame.draw.circle(screen, color, (p.x * 2, p.y * 2), p.radius * 2, 1)
+        pygame.display.flip()
+        clock.tick(60)
+        print(f"roundlings count: {len(board.roundlings)}")
+        print(f"food count: {len(board.food)}")
+    pygame.quit()

@@ -6,3 +6,7 @@ things: proteins.
 
 This is kind of a tensorflow hello world for me in the sense
 that I created this for practice. Therefore, don't expect much!
+
+## Basics
+The red circles are roundlings, the green circles are food, and
+everything else is a protein.

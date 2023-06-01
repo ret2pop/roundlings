@@ -11,7 +11,7 @@ import random
 import gc # for gc.collect()
 
 REPRODUCTION_COST = 14
-ROUNDLING_COUNT = 100
+ROUNDLING_COUNT = 120
 FOOD_COUNT = 40
 FOOD_ENERGY = 6.5
 MULTIPLIER = 2
@@ -61,13 +61,11 @@ class Board:
             p.turn()
             p.time += delta
         self.proteins[:] = [p for p in self.proteins if p.time <= 1 and not self.is_outside(p)]
-        gc.collect()
 
         for f in self.food:
             f.turn()
             self.proteins.append(f.make_protein())
         self.food[:] = [f for f in self.food if not self.is_outside(f)]
-        gc.collect()
 
         for r in self.roundlings:
             a = r.turn()
@@ -92,7 +90,6 @@ class Board:
         self.proteins[:] = [p for p in self.proteins if not p.dead and not self.is_outside(p)]
         self.roundlings[:] = [r for r in self.roundlings if r.energy >= 0 and r.time < 10 and not self.is_outside(r)]
 
-        gc.collect()
 
         while len(self.food) < self.max_food:
             self.food.append(Food(random.random() * self.max_x, random.random() * self.max_y))
@@ -168,29 +165,25 @@ class Roundling(IntObject):
             input_data.append(0)
         input_data.append(self.energy)
         print(f"inside NN: {input_data[3]}")
-        return self.model.predict(tf.reshape(tf.convert_to_tensor(input_data), shape=(1, 13)))
+        return self.model(tf.reshape(tf.convert_to_tensor(input_data), shape=(1, 13)), training=False)
 
     def move(self, output_vector):  # TODO remember to subtract energy according to an energy loss function per vector magnitude
         c = 0.05
-        passive_energy = 0.06
-        out = output_vector[0]
+        passive_energy = 0.055
+        protein_cost = 0.01
+
+        output = output_vector[0]
+        output_np = output.numpy()
+        out = list(output_np)
         self.x += out[0]
         self.y += out[1]
         dist_delta = abs(math.sqrt(math.pow(out[0], 2) + math.pow(out[1], 2)))
-        if out[2] > 0.5: # create protein with x and y
-            if out[3] > 5:
-                protein_x = 5
-            else:
-                protein_x = out[3]
-            if out[4] > 5:
-                protein_y = 5
-            else:
-                protein_y = out[4]
+        self.energy -= dist_delta * c * self.radius + passive_energy  # currently linear; we should experiment with exponential c
+        if out[2] > 0.5:  # create protein with x and y
+            protein_x = max(8, out[3])
+            protein_y = max(8, out[4])
 
-            protein_cost = 0.01
             self.energy -= protein_cost
-        self.energy -= dist_delta * c * self.radius + passive_energy # currently linear; we should experiment with exponential c
-        if out[2] > 0.5:
             return Protein(protein_x + self.x, protein_y + self.y, self, out[2])
         else:
             return
